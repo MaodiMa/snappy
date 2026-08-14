@@ -685,9 +685,26 @@ static inline char* EmitCopyAtMost64(char* op, size_t offset, size_t len) {
     // benchmarks. This code produces branch free code, the data dependency
     // chain that bottlenecks the throughput is so long that a few extra
     // instructions are completely free (IPC << 6 because of data deps).
+#if defined(__x86_64__) && defined(__GNUC__)
+    uint32_t temp;
+    char* op_ = op;
+    __asm__ __volatile__(
+      "cmp $2048, %2\n\t"
+      "mov %3, %0\n\t"		// temp = copy1
+      "cmovae %4, %0\n\t"	// temp = copy2 if (offset < 2048), cover copy1
+      "sbb $0, %1\n\t"		// op -= 1 if (offset < 2048), reuse CF
+      "add $3, %1\n\t"		// op += 3
+      : "=&r"(temp), "+&r"(op)
+      : "r"(offset), "r"(copy1), "r"(copy2)
+      : "cc"
+    );
+    u += temp;
+    LittleEndian::Store32(op_, u);
+#else
     u += offset < 2048 ? copy1 : copy2;
     LittleEndian::Store32(op, u);
     op += offset < 2048 ? 2 : 3;
+#endif
   } else {
     // Write 4 bytes, though we only care about 3 of them.  The output buffer
     // is required to have some slack, so the extra byte won't overrun it.
@@ -1485,6 +1502,9 @@ std::pair<const uint8_t*, ptrdiff_t> DecompressBranchless(
       // leads to reduced mov's.
 
       SNAPPY_PREFETCH(ip + 128);
+#if defined(__GNUC__)
+      #pragma GCC unroll 2
+#endif
       for (int i = 0; i < 2; i++) {
         const uint8_t* old_ip = ip;
         assert(tag == ip[-1]);
